@@ -1,0 +1,171 @@
+name: CI/CD AWS EKS
+
+on:
+  push:
+    branches:
+      - main
+      - stage
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment (staging|production)'
+        required: false
+        default: ''
+      rollback:
+        description: 'If true, perform rollback instead of deploy (requires manual dispatch)'
+        required: false
+        default: 'false'
+
+env:
+  IMAGE_NAME: demo-app
+  K8S_MANIFEST_PATH: k8s
+
+jobs:
+  build-and-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+
+      - name: Build with Maven
+        run: mvn -B -DskipTests clean package
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Ensure ECR repository exists
+        run: |
+          REPO_NAME="${{ env.IMAGE_NAME }}"
+          if ! aws ecr describe-repositories --repository-names "$REPO_NAME" >/dev/null 2>&1; then
+            aws ecr create-repository --repository-name "$REPO_NAME"
+          fi
+
+      - name: Ensure ECR lifecycle policy exists
+        run: |
+          REPO_NAME="${{ env.IMAGE_NAME }}"
+          POLICY="{\"rules\":[{\"rulePriority\":1,\"description\":\"Expire untagged images older than 30 days\",\"selection\":{\"tagStatus\":\"untagged\",\"countType\":\"sinceImagePushed\",\"countNumber\":30,\"countUnit\":\"days\"},\"action\":{\"type\":\"expire\"}},{\"rulePriority\":2,\"description\":\"Keep latest 10 tagged images\",\"selection\":{\"tagStatus\":\"tagged\",\"tagPrefixList\":[\"\"],\"countType\":\"imageCountMoreThan\",\"countNumber\":10},\"action\":{\"type\":\"expire\"}}]}"
+          aws ecr put-lifecycle-policy --repository-name "$REPO_NAME" --lifecycle-policy-text "$POLICY"
+
+      - name: Build Docker image
+        run: |
+          ECR_REGISTRY=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+          IMAGE_TAG=$ECR_REGISTRY/${{ env.IMAGE_NAME }}:latest
+          docker build -t $IMAGE_TAG .
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Push Docker image to ECR
+        run: |
+          docker push ${{ steps.ecr-login.outputs.registry }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Set image URL
+        run: echo "IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_OUTPUT
+
+  deploy:
+    name: Deploy to EKS
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Determine target environment
+        id: target-env
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DEPLOY_ENV="${{ github.event.inputs.environment }}"
+            if [ -z "$DEPLOY_ENV" ]; then
+              echo "No environment input provided, default to staging"
+              DEPLOY_ENV=staging
+            fi
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            DEPLOY_ENV=production
+          elif [ "${{ github.ref }}" = "refs/heads/stage" ]; then
+            DEPLOY_ENV=staging
+          else
+            echo "Unsupported branch for deploy: ${GITHUB_REF}"
+            exit 1
+          fi
+          echo "DEPLOY_ENV=$DEPLOY_ENV" >> $GITHUB_OUTPUT
+
+      - name: Compute namespace and image
+        id: env-setup
+        run: |
+          DEPLOY_ENV=${{ steps.target-env.outputs.DEPLOY_ENV }}
+          NAMESPACE="demo-$DEPLOY_ENV"
+          IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ env.IMAGE_NAME }}:latest
+          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+      - name: Apply Kubernetes manifests
+        run: |
+          kubectl create namespace ${{ steps.env-setup.outputs.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          kubectl set image deployment/demo-app demo-app=${{ steps.env-setup.outputs.IMAGE_URI }} --namespace ${{ steps.env-setup.outputs.NAMESPACE }} --record
+          kubectl apply -n ${{ steps.env-setup.outputs.NAMESPACE }} -f ${{ env.K8S_MANIFEST_PATH }}/deployment.yaml
+          kubectl apply -n ${{ steps.env-setup.outputs.NAMESPACE }} -f ${{ env.K8S_MANIFEST_PATH }}/service.yaml
+
+      - name: Verify rollout status
+        run: |
+          kubectl rollout status deployment/demo-app --namespace ${{ steps.env-setup.outputs.NAMESPACE }} --timeout=120s
+
+  rollback:
+    name: Rollback deployment (manual)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.rollback == 'true'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Determine rollback namespace
+        id: rollback-env
+        run: |
+          if [ -n "${{ github.event.inputs.environment }}" ]; then
+            NAMESPACE="demo-${{ github.event.inputs.environment }}"
+          else
+            NAMESPACE=demo-production
+          fi
+          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+      - name: Rollback deployment
+        run: |
+          kubectl rollout undo deployment/demo-app --namespace ${{ steps.rollback-env.outputs.NAMESPACE }}
+
