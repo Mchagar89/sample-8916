@@ -59,7 +59,7 @@ jobs:
       - name: Ensure ECR lifecycle policy exists
         run: |
           REPO_NAME="${{ env.IMAGE_NAME }}"
-          POLICY="{\"rules\":[{\"rulePriority\":1,\"description\":\"Expire untagged images older than 30 days\",\"selection\":{\"tagStatus\":\"untagged\",\"countType\":\"sinceImagePushed\",\"countNumber\":30,\"countUnit\":\"days\"},\"action\":{\"type\":\"expire\"}},{\"rulePriority\":2,\"description\":\"Keep latest 10 tagged images\",\"selection\":{\"tagStatus\":\"tagged\",\"tagPrefixList\":[\"latest\"]":[\"\"],\"countType\":\"imageCountMoreThan\",\"countNumber\":10},\"action\":{\"type\":\"expire\"}}]}"
+          POLICY="{\"rules\":[{\"rulePriority\":1,\"description\":\"Expire untagged images older than 30 days\",\"selection\":{\"tagStatus\":\"untagged\",\"countType\":\"sinceImagePushed\",\"countNumber\":30,\"countUnit\":\"days\"},\"action\":{\"type\":\"expire\"}},{\"rulePriority\":2,\"description\":\"Keep latest 10 tagged images\",\"selection\":{\"tagStatus\":\"tagged\",\"tagPrefixList\":[\"latest\"],\"countType\":\"imageCountMoreThan\",\"countNumber\":10},\"action\":{\"type\":\"expire\"}}]}"
           aws ecr put-lifecycle-policy --repository-name "$REPO_NAME" --lifecycle-policy-text "$POLICY"
 
       - name: Build Docker image
