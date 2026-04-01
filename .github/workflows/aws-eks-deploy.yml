@@ -128,8 +128,8 @@ jobs:
       - name: Apply Kubernetes manifests
         run: |
           kubectl create namespace ${{ steps.env-setup.outputs.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
-          kubectl set image deployment/demo-app demo-app=${{ steps.env-setup.outputs.IMAGE_URI }} --namespace ${{ steps.env-setup.outputs.NAMESPACE }} --record
           kubectl apply -n ${{ steps.env-setup.outputs.NAMESPACE }} -f ${{ env.K8S_MANIFEST_PATH }}/deployment.yaml
+          kubectl set image deployment/demo-app demo-app=${{ steps.env-setup.outputs.IMAGE_URI }} --namespace ${{ steps.env-setup.outputs.NAMESPACE }} --record
           kubectl apply -n ${{ steps.env-setup.outputs.NAMESPACE }} -f ${{ env.K8S_MANIFEST_PATH }}/service.yaml
 
       - name: Verify rollout status
