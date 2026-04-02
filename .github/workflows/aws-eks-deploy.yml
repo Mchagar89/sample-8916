@@ -126,6 +126,17 @@ jobs:
         run: |
           aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
 
+      - name: Verify ECR image exists
+        run: |
+          IMAGE_URI=${{ steps.env-setup.outputs.IMAGE_URI }}
+          REPO="${{ env.IMAGE_NAME }}"
+          TAG="latest"
+          if ! aws ecr describe-images --repository-name "$REPO" --image-ids imageTag="$TAG" --region ${{ secrets.AWS_REGION }} >/dev/null 2>&1; then
+            echo "Image $IMAGE_URI not found in ECR. Ensure build-and-push job completed successfully."
+            exit 1
+          fi
+          echo "Image verified: $IMAGE_URI"
+
       - name: Apply Kubernetes manifests
         run: |
           kubectl create namespace ${{ steps.env-setup.outputs.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
@@ -135,7 +146,22 @@ jobs:
 
       - name: Verify rollout status
         run: |
-          kubectl rollout status deployment/demo-app --namespace ${{ steps.env-setup.outputs.NAMESPACE }} --timeout=220s
+          kubectl rollout status deployment/demo-app --namespace ${{ steps.env-setup.outputs.NAMESPACE }} --timeout=480s
+
+      - name: Diagnose rollout failure
+        if: failure()
+        run: |
+          NS=${{ steps.env-setup.outputs.NAMESPACE }}
+          echo "=== Deployment description ==="
+          kubectl describe deployment/demo-app -n $NS
+          echo "=== Pod states ==="
+          kubectl get pods -n $NS -o wide
+          echo "=== Pod logs (last 50 lines) ==="
+          kubectl logs -n $NS -l app=demo-app --tail=50 --prefix || true
+          echo "=== Recent events ==="
+          kubectl get events -n $NS --sort-by='.lastTimestamp' | tail -30
+          echo "=== Node resource capacity ==="
+          kubectl describe nodes | grep -A5 "Allocated resources"
 
   rollback:
     name: Rollback deployment (manual)
