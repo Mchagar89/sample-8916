@@ -114,6 +114,14 @@ jobs:
           echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_OUTPUT
 
+      - name: Verify EKS cluster exists
+        run: |
+          if ! aws eks describe-cluster --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }} >/dev/null 2>&1; then
+            echo "EKS cluster '${{ secrets.EKS_CLUSTER_NAME }}' not found in region ${{ secrets.AWS_REGION }}."
+            echo "Create the cluster before deploying: eksctl create cluster --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}"
+            exit 1
+          fi
+
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
@@ -154,6 +162,13 @@ jobs:
             NAMESPACE=demo-production
           fi
           echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
+
+      - name: Verify EKS cluster exists
+        run: |
+          if ! aws eks describe-cluster --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }} >/dev/null 2>&1; then
+            echo "EKS cluster '${{ secrets.EKS_CLUSTER_NAME }}' not found in region ${{ secrets.AWS_REGION }}."
+            exit 1
+          fi
 
       - name: Update kubeconfig
         run: |
