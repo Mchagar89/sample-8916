@@ -7,6 +7,11 @@ metadata:
 spec:
   replicas: 2
   progressDeadlineSeconds: 420
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 0
   selector:
     matchLabels:
       app: demo-app
@@ -17,7 +22,7 @@ spec:
     spec:
       containers:
       - name: demo-app
-        image: demo-app:latest
+        image: 354932142497.dkr.ecr.us-east-1.amazonaws.com/demo-app:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
@@ -34,7 +39,7 @@ spec:
             port: 8080
           initialDelaySeconds: 10
           periodSeconds: 10
-          failureThreshold: 12
+          failureThreshold: 24
         livenessProbe:
           httpGet:
             path: /actuator/health
