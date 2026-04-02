@@ -134,7 +134,7 @@ jobs:
 
       - name: Verify rollout status
         run: |
-          kubectl rollout status deployment/demo-app --namespace ${{ steps.env-setup.outputs.NAMESPACE }} --timeout=1000s
+          kubectl rollout status deployment/demo-app --namespace ${{ steps.env-setup.outputs.NAMESPACE }} --timeout=500s
 
   rollback:
     name: Rollback deployment (manual)
