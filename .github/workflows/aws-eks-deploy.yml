@@ -62,19 +62,12 @@ jobs:
           POLICY="{\"rules\":[{\"rulePriority\":1,\"description\":\"Expire untagged images older than 30 days\",\"selection\":{\"tagStatus\":\"untagged\",\"countType\":\"sinceImagePushed\",\"countNumber\":30,\"countUnit\":\"days\"},\"action\":{\"type\":\"expire\"}},{\"rulePriority\":2,\"description\":\"Keep latest 10 tagged images\",\"selection\":{\"tagStatus\":\"tagged\",\"tagPrefixList\":[\"latest\"],\"countType\":\"imageCountMoreThan\",\"countNumber\":10},\"action\":{\"type\":\"expire\"}}]}"
           aws ecr put-lifecycle-policy --repository-name "$REPO_NAME" --lifecycle-policy-text "$POLICY"
 
-      - name: Build Docker image
+      - name: Build and push Docker image
         run: |
-          ECR_REGISTRY=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+          ECR_REGISTRY=${{ steps.ecr-login.outputs.registry }}
           IMAGE_TAG=$ECR_REGISTRY/${{ env.IMAGE_NAME }}:latest
           docker build -t $IMAGE_TAG .
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-      - name: Push Docker image to ECR
-        run: |
-          docker push ${{ steps.ecr-login.outputs.registry }}/${{ env.IMAGE_NAME }}:latest
-
-      - name: Set image URL
-        run: echo "IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_OUTPUT
+          docker push $IMAGE_TAG
 
   deploy:
     name: Deploy to EKS
@@ -129,7 +122,7 @@ jobs:
         run: |
           kubectl create namespace ${{ steps.env-setup.outputs.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
           kubectl apply -n ${{ steps.env-setup.outputs.NAMESPACE }} -f ${{ env.K8S_MANIFEST_PATH }}/deployment.yaml
-          kubectl set image deployment/demo-app demo-app=${{ steps.env-setup.outputs.IMAGE_URI }} --namespace ${{ steps.env-setup.outputs.NAMESPACE }} --record
+          kubectl set image deployment/demo-app demo-app=${{ steps.env-setup.outputs.IMAGE_URI }} --namespace ${{ steps.env-setup.outputs.NAMESPACE }}
           kubectl apply -n ${{ steps.env-setup.outputs.NAMESPACE }} -f ${{ env.K8S_MANIFEST_PATH }}/service.yaml
 
       - name: Verify rollout status
@@ -169,4 +162,3 @@ jobs:
       - name: Rollback deployment
         run: |
           kubectl rollout undo deployment/demo-app --namespace ${{ steps.rollback-env.outputs.NAMESPACE }}
-
