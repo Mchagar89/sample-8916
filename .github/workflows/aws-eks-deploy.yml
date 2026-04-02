@@ -126,6 +126,29 @@ jobs:
         run: |
           aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
 
+      - name: Scale up node group if needed
+        run: |
+          CLUSTER=${{ secrets.EKS_CLUSTER_NAME }}
+          REGION=${{ secrets.AWS_REGION }}
+          # Get the first managed node group
+          NODE_GROUP=$(aws eks list-nodegroups --cluster-name $CLUSTER --region $REGION --query 'nodegroups[0]' --output text)
+          if [ -z "$NODE_GROUP" ] || [ "$NODE_GROUP" = "None" ]; then
+            echo "No managed node groups found, skipping scale-up check."
+          else
+            CURRENT=$(aws eks describe-nodegroup --cluster-name $CLUSTER --nodegroup-name $NODE_GROUP --region $REGION --query 'nodegroup.scalingConfig.desiredSize' --output text)
+            echo "Current node count: $CURRENT"
+            if [ "$CURRENT" -lt 3 ]; then
+              echo "Scaling node group to 3 to ensure scheduling headroom..."
+              aws eks update-nodegroup-config \
+                --cluster-name $CLUSTER \
+                --nodegroup-name $NODE_GROUP \
+                --region $REGION \
+                --scaling-config desiredSize=3
+              echo "Waiting for nodes to be Ready..."
+              kubectl wait node --all --for=condition=Ready --timeout=180s
+            fi
+          fi
+
       - name: Verify ECR image exists
         run: |
           IMAGE_URI=${{ steps.env-setup.outputs.IMAGE_URI }}
