@@ -32,6 +32,7 @@ jobs:
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
+          distribution: 'temurin'
           java-version: '17'
 
       - name: Build with Maven
@@ -58,22 +59,15 @@ jobs:
       - name: Ensure ECR lifecycle policy exists
         run: |
           REPO_NAME="${{ env.IMAGE_NAME }}"
-          POLICY="{\"rules\":[{\"rulePriority\":1,\"description\":\"Expire untagged images older than 30 days\",\"selection\":{\"tagStatus\":\"untagged\",\"countType\":\"sinceImagePushed\",\"countNumber\":30,\"countUnit\":\"days\"},\"action\":{\"type\":\"expire\"}},{\"rulePriority\":2,\"description\":\"Keep latest 10 tagged images\",\"selection\":{\"tagStatus\":\"tagged\",\"tagPrefixList\":[\"\"],\"countType\":\"imageCountMoreThan\",\"countNumber\":10},\"action\":{\"type\":\"expire\"}}]}"
+          POLICY="{\"rules\":[{\"rulePriority\":1,\"description\":\"Expire untagged images older than 30 days\",\"selection\":{\"tagStatus\":\"untagged\",\"countType\":\"sinceImagePushed\",\"countNumber\":30,\"countUnit\":\"days\"},\"action\":{\"type\":\"expire\"}},{\"rulePriority\":2,\"description\":\"Keep latest 10 tagged images\",\"selection\":{\"tagStatus\":\"tagged\",\"tagPrefixList\":[\"latest\"],\"countType\":\"imageCountMoreThan\",\"countNumber\":10},\"action\":{\"type\":\"expire\"}}]}"
           aws ecr put-lifecycle-policy --repository-name "$REPO_NAME" --lifecycle-policy-text "$POLICY"
 
-      - name: Build Docker image
+      - name: Build and push Docker image
         run: |
-          ECR_REGISTRY=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+          ECR_REGISTRY=${{ steps.ecr-login.outputs.registry }}
           IMAGE_TAG=$ECR_REGISTRY/${{ env.IMAGE_NAME }}:latest
           docker build -t $IMAGE_TAG .
-          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-      - name: Push Docker image to ECR
-        run: |
-          docker push ${{ steps.ecr-login.outputs.registry }}/${{ env.IMAGE_NAME }}:latest
-
-      - name: Set image URL
-        run: echo "IMAGE_URI=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ env.IMAGE_NAME }}:latest" >> $GITHUB_OUTPUT
+          docker push $IMAGE_TAG
 
   deploy:
     name: Deploy to EKS
@@ -120,20 +114,77 @@ jobs:
           echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
           echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_OUTPUT
 
+      - name: Verify EKS cluster exists
+        run: |
+          if ! aws eks describe-cluster --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }} >/dev/null 2>&1; then
+            echo "EKS cluster '${{ secrets.EKS_CLUSTER_NAME }}' not found in region ${{ secrets.AWS_REGION }}."
+            echo "Create the cluster before deploying: eksctl create cluster --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ secrets.AWS_REGION }}"
+            exit 1
+          fi
+
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
 
+      - name: Scale up node group if needed
+        run: |
+          CLUSTER=${{ secrets.EKS_CLUSTER_NAME }}
+          REGION=${{ secrets.AWS_REGION }}
+          # Get the first managed node group
+          NODE_GROUP=$(aws eks list-nodegroups --cluster-name $CLUSTER --region $REGION --query 'nodegroups[0]' --output text)
+          if [ -z "$NODE_GROUP" ] || [ "$NODE_GROUP" = "None" ]; then
+            echo "No managed node groups found, skipping scale-up check."
+          else
+            CURRENT=$(aws eks describe-nodegroup --cluster-name $CLUSTER --nodegroup-name $NODE_GROUP --region $REGION --query 'nodegroup.scalingConfig.desiredSize' --output text)
+            echo "Current node count: $CURRENT"
+            if [ "$CURRENT" -lt 3 ]; then
+              echo "Scaling node group to 3 to ensure scheduling headroom..."
+              aws eks update-nodegroup-config \
+                --cluster-name $CLUSTER \
+                --nodegroup-name $NODE_GROUP \
+                --region $REGION \
+                --scaling-config desiredSize=3
+              echo "Waiting for nodes to be Ready..."
+              kubectl wait node --all --for=condition=Ready --timeout=180s
+            fi
+          fi
+
+      - name: Verify ECR image exists
+        run: |
+          IMAGE_URI=${{ steps.env-setup.outputs.IMAGE_URI }}
+          REPO="${{ env.IMAGE_NAME }}"
+          TAG="latest"
+          if ! aws ecr describe-images --repository-name "$REPO" --image-ids imageTag="$TAG" --region ${{ secrets.AWS_REGION }} >/dev/null 2>&1; then
+            echo "Image $IMAGE_URI not found in ECR. Ensure build-and-push job completed successfully."
+            exit 1
+          fi
+          echo "Image verified: $IMAGE_URI"
+
       - name: Apply Kubernetes manifests
         run: |
           kubectl create namespace ${{ steps.env-setup.outputs.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
-          kubectl set image deployment/demo-app demo-app=${{ steps.env-setup.outputs.IMAGE_URI }} --namespace ${{ steps.env-setup.outputs.NAMESPACE }} --record
           kubectl apply -n ${{ steps.env-setup.outputs.NAMESPACE }} -f ${{ env.K8S_MANIFEST_PATH }}/deployment.yaml
+          kubectl set image deployment/demo-app demo-app=${{ steps.env-setup.outputs.IMAGE_URI }} --namespace ${{ steps.env-setup.outputs.NAMESPACE }}
           kubectl apply -n ${{ steps.env-setup.outputs.NAMESPACE }} -f ${{ env.K8S_MANIFEST_PATH }}/service.yaml
 
       - name: Verify rollout status
         run: |
-          kubectl rollout status deployment/demo-app --namespace ${{ steps.env-setup.outputs.NAMESPACE }} --timeout=120s
+          kubectl rollout status deployment/demo-app --namespace ${{ steps.env-setup.outputs.NAMESPACE }} --timeout=480s
+
+      - name: Diagnose rollout failure
+        if: failure()
+        run: |
+          NS=${{ steps.env-setup.outputs.NAMESPACE }}
+          echo "=== Deployment description ==="
+          kubectl describe deployment/demo-app -n $NS
+          echo "=== Pod states ==="
+          kubectl get pods -n $NS -o wide
+          echo "=== Pod logs (last 50 lines) ==="
+          kubectl logs -n $NS -l app=demo-app --tail=50 --prefix || true
+          echo "=== Recent events ==="
+          kubectl get events -n $NS --sort-by='.lastTimestamp' | tail -30
+          echo "=== Node resource capacity ==="
+          kubectl describe nodes | grep -A5 "Allocated resources"
 
   rollback:
     name: Rollback deployment (manual)
@@ -161,6 +212,13 @@ jobs:
           fi
           echo "NAMESPACE=$NAMESPACE" >> $GITHUB_OUTPUT
 
+      - name: Verify EKS cluster exists
+        run: |
+          if ! aws eks describe-cluster --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }} >/dev/null 2>&1; then
+            echo "EKS cluster '${{ secrets.EKS_CLUSTER_NAME }}' not found in region ${{ secrets.AWS_REGION }}."
+            exit 1
+          fi
+
       - name: Update kubeconfig
         run: |
           aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
@@ -168,4 +226,3 @@ jobs:
       - name: Rollback deployment
         run: |
           kubectl rollout undo deployment/demo-app --namespace ${{ steps.rollback-env.outputs.NAMESPACE }}
-
