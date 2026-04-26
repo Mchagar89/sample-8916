@@ -33,6 +33,7 @@ if [[ "$JNI_ONLY" == false ]]; then
     echo ">>> Building OpenRedukti..."
     cmake -S "${OPENREDUKTI_SRC}" -B "${OPENREDUKTI_BUILD}" \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CXX_STANDARD=17 \
         -DGRPC_SERVER=OFF \
         -DUSE_OPENBLAS=ON
     cmake --build "${OPENREDUKTI_BUILD}" --parallel "$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)"
