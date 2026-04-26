@@ -130,11 +130,12 @@ jobs:
         run: |
           CLUSTER=${{ secrets.EKS_CLUSTER_NAME }}
           REGION=${{ secrets.AWS_REGION }}
-          # Get the first managed node group
           NODE_GROUP=$(aws eks list-nodegroups --cluster-name $CLUSTER --region $REGION --query 'nodegroups[0]' --output text)
           if [ -z "$NODE_GROUP" ] || [ "$NODE_GROUP" = "None" ]; then
             echo "No managed node groups found, skipping scale-up check."
           else
+            echo "Waiting for node group '$NODE_GROUP' to be ACTIVE..."
+            aws eks wait nodegroup-active --cluster-name $CLUSTER --nodegroup-name $NODE_GROUP --region $REGION
             CURRENT=$(aws eks describe-nodegroup --cluster-name $CLUSTER --nodegroup-name $NODE_GROUP --region $REGION --query 'nodegroup.scalingConfig.desiredSize' --output text)
             echo "Current node count: $CURRENT"
             if [ "$CURRENT" -lt 3 ]; then
