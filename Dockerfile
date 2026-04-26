@@ -14,9 +14,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /opt
 RUN git clone --depth 1 https://github.com/redukti/OpenRedukti.git
 
+# OpenRedukti CMakeLists uses a local set(CMAKE_CXX_STANDARD 14) that shadows
+# the -D flag, so we patch it directly to C++17 (required for std::size).
+RUN sed -i 's/set(CMAKE_CXX_STANDARD 14)/set(CMAKE_CXX_STANDARD 17)/' \
+        /opt/OpenRedukti/CMakeLists.txt
+
 RUN cmake -S /opt/OpenRedukti -B /opt/openredukti-build \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_CXX_STANDARD=17 \
         -DGRPC_SERVER=OFF \
         -DUSE_OPENBLAS=ON \
     && cmake --build /opt/openredukti-build --parallel "$(nproc)"
