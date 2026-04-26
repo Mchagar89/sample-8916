@@ -1,11 +1,119 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Spring Boot App</title>
+  <meta charset="UTF-8">
+  <title>OpenRedukti – Spring Boot</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 860px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; }
+    h1 { color: #1d4ed8; }
+    h2 { margin-top: 32px; border-bottom: 1px solid #e5e7eb; padding-bottom: 6px; }
+    .badge { display:inline-block; padding:2px 8px; border-radius:4px; font-size:.78em; font-weight:600; margin-right:6px; }
+    .get  { background:#dcfce7; color:#166534; }
+    .post { background:#dbeafe; color:#1e40af; }
+    pre  { background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:14px; overflow-x:auto; font-size:.88em; }
+    button { cursor:pointer; background:#1d4ed8; color:#fff; border:none; border-radius:5px; padding:8px 16px; margin-top:8px; }
+    button:hover { background:#1e40af; }
+    textarea { width:100%; box-sizing:border-box; font-family:monospace; font-size:.85em; border:1px solid #d1d5db; border-radius:5px; padding:8px; }
+    #result { margin-top:10px; white-space:pre-wrap; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; padding:12px; min-height:40px; font-size:.85em; }
+    #result.error { background:#fef2f2; border-color:#fecaca; }
+  </style>
 </head>
 <body>
-    <h1>Welcome to the Spring Boot Application!</h1>
-    <p>Try <a href="/api/hello">/api/hello</a> for a JSON response.</p>
+
+<h1>OpenRedukti + Spring Boot</h1>
+<p>Interest-rate derivatives pricing via a JNI bridge to the <strong>OpenRedukti</strong> C++ library.</p>
+
+<h2>Endpoints</h2>
+
+<p><span class="badge get">GET</span> <a href="/api/hello">/api/hello</a> – health ping</p>
+<p><span class="badge get">GET</span> <a href="/api/redukti/version">/api/redukti/version</a> – library version</p>
+<p><span class="badge post">POST</span> <code>/api/redukti/bootstrap</code> – bootstrap zero curves from par rates</p>
+<p><span class="badge post">POST</span> <code>/api/redukti/value</code> – compute IRS present value &amp; DV01</p>
+
+<h2>Try it</h2>
+
+<label for="endpoint"><strong>Endpoint</strong></label><br>
+<select id="endpoint" onchange="loadSample()" style="margin:6px 0 12px;padding:6px;border-radius:4px;border:1px solid #d1d5db;">
+  <option value="GET /api/redukti/version">GET /api/redukti/version</option>
+  <option value="POST /api/redukti/bootstrap">POST /api/redukti/bootstrap</option>
+  <option value="POST /api/redukti/value">POST /api/redukti/value</option>
+</select><br>
+
+<label for="body"><strong>Request body (JSON)</strong></label><br>
+<textarea id="body" rows="18"></textarea><br>
+<button onclick="send()">Send request</button>
+
+<div id="result">— response will appear here —</div>
+
+<script>
+const samples = {
+  "GET /api/redukti/version": "",
+  "POST /api/redukti/bootstrap": JSON.stringify({
+    curveDate: "2024-01-15",
+    currency: "USD",
+    interpolatorType: "MONOTONE_CONVEX",
+    instruments: [
+      { maturityDate: "2024-04-15", parRate: 0.0535, instrumentType: "DEPOSIT" },
+      { maturityDate: "2024-07-15", parRate: 0.0540, instrumentType: "DEPOSIT" },
+      { maturityDate: "2025-01-15", parRate: 0.0545, instrumentType: "SWAP"    },
+      { maturityDate: "2026-01-15", parRate: 0.0550, instrumentType: "SWAP"    },
+      { maturityDate: "2027-01-15", parRate: 0.0552, instrumentType: "SWAP"    },
+      { maturityDate: "2029-01-15", parRate: 0.0555, instrumentType: "SWAP"    }
+    ]
+  }, null, 2),
+  "POST /api/redukti/value": JSON.stringify({
+    tradeDate:       "2024-01-15",
+    effectiveDate:   "2024-01-17",
+    terminationDate: "2029-01-17",
+    currency:        "USD",
+    notional:        1000000.0,
+    fixedRate:       0.055,
+    payFixed:        true,
+    derivativeOrder: 1,
+    zeroCurve: {
+      id: 1,
+      points: [
+        { maturityDate: "2024-04-17", discountFactor: 0.9868 },
+        { maturityDate: "2025-01-17", discountFactor: 0.9480 },
+        { maturityDate: "2026-01-17", discountFactor: 0.9100 },
+        { maturityDate: "2027-01-17", discountFactor: 0.8740 },
+        { maturityDate: "2028-01-17", discountFactor: 0.8390 },
+        { maturityDate: "2029-01-17", discountFactor: 0.8060 }
+      ]
+    }
+  }, null, 2)
+};
+
+function loadSample() {
+  const sel = document.getElementById("endpoint").value;
+  document.getElementById("body").value = samples[sel] || "";
+}
+loadSample();
+
+async function send() {
+  const sel   = document.getElementById("endpoint").value;
+  const [method, path] = sel.split(" ");
+  const bodyTxt = document.getElementById("body").value.trim();
+  const out   = document.getElementById("result");
+  out.className = "";
+  out.textContent = "Loading…";
+
+  try {
+    const opts = { method };
+    if (method === "POST" && bodyTxt) {
+      opts.headers = { "Content-Type": "application/json" };
+      opts.body = bodyTxt;
+    }
+    const res  = await fetch(path, opts);
+    const json = await res.json();
+    out.textContent = JSON.stringify(json, null, 2);
+    if (!res.ok) out.className = "error";
+  } catch (e) {
+    out.className = "error";
+    out.textContent = "Fetch error: " + e.message;
+  }
+}
+</script>
+
 </body>
 </html>
