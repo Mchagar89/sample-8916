@@ -10,6 +10,6 @@ public class HelloController {
 
     @GetMapping("/hello")
     public String hello() {
-        return "Hello from Jian Spring Boot shell app!";
+        return "Hello from Jian/Test1 test1 branch Spring Boot shell app!";
     }
 }
